@@ -675,6 +675,35 @@ it.instance("loop surfaces content-filter finishes as session errors", () =>
   }),
 )
 
+it.instance("sets first prompt title locally without an LLM title request", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Can you investigate the local model prefill issue after startup?" }],
+    })
+    yield* llm.text("ok")
+
+    yield* prompt.loop({ sessionID: chat.id })
+    yield* pollWithTimeout(
+      Effect.gen(function* () {
+        const updated = yield* sessions.get(chat.id)
+        return updated.title === "Can you investigate the local model" ? true : undefined
+      }),
+      "session title was not derived locally",
+      "2 seconds",
+    )
+    expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
 it.instance("loop stops provider overflow instead of auto-compacting when disabled", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
