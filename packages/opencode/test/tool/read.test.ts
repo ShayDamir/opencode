@@ -321,7 +321,7 @@ describe("tool.read truncation", () => {
       const content = base.length >= target ? base : base.repeat(Math.ceil(target / base.length))
       yield* put(path.join(test.directory, "large.json"), content)
 
-      const result = yield* run({ filePath: path.join(test.directory, "large.json") })
+      const result = yield* run({ filePath: path.join(test.directory, "large.json"), limit: 100_000 })
       expect(result.metadata.truncated).toBe(true)
       expect(result.output).toContain("Output capped at")
       expect(result.output).toContain("Use offset=")
@@ -337,7 +337,7 @@ describe("tool.read truncation", () => {
 
       const fs = yield* FSUtil.Service
       const counter = { bytes: 0 }
-      const result = yield* run({ filePath: filepath }).pipe(
+      const result = yield* run({ filePath: filepath, limit: 100_000 }).pipe(
         Effect.provideService(
           FSUtil.Service,
           FSUtil.Service.of({
@@ -373,6 +373,21 @@ describe("tool.read truncation", () => {
       expect(result.output).toContain("line0")
       expect(result.output).toContain("line9")
       expect(result.output).not.toContain("line10")
+    }),
+  )
+
+  it.instance("defaults to 500 lines when limit is omitted", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const lines = Array.from({ length: 600 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(path.join(test.directory, "default-limit.txt"), lines)
+
+      const result = yield* run({ filePath: path.join(test.directory, "default-limit.txt") })
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("Showing lines 1-500 of 600")
+      expect(result.output).toContain("Use offset=501")
+      expect(result.output).toContain("500: line500")
+      expect(result.output).not.toContain("501: line501")
     }),
   )
 
