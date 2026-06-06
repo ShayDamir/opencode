@@ -73,7 +73,7 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
         <span style={{ fg: theme().text }}>
           <b>Code</b>
         </span>{" "}
-        <span>{props.api.app.version}</span>
+        <span>{props.api.app.version}</span> <span style={{ fg: theme().warning }}>local-model fork</span>
       </text>
     </box>
   )
