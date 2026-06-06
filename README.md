@@ -14,6 +14,19 @@
   <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
+## Local Model Fork
+
+This public fork keeps OpenCode's agent loop, tool protocol, config loading, and plugin system, but tunes the runtime for local models where prefill time and prompt-cache stability matter.
+
+Changes in this fork:
+
+- Compaction uses the active agent and model, appends the summary request after the existing transcript, disables tools for the summary turn, and resumes automatically when auto-compaction triggers.
+- Parallel tool calls are disabled. The model is instructed to call one tool at a time, and the runtime skips extra tool calls from the same assistant turn.
+- The default provider prompt is shortened for local and OpenAI-compatible models that fall back to `default.txt`.
+- Tool usage guidance prefers targeted searches and file ranges to avoid unnecessary context growth.
+
+Existing OpenCode config, providers, models, and plugins continue to load from the normal global and project config locations.
+
 <p align="center">
   <a href="README.md">English</a> |
   <a href="README.zh.md">简体中文</a> |

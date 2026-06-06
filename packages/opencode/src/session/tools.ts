@@ -37,6 +37,10 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "image/png",
   "image/webp",
 ])
+const PARALLEL_TOOL_CALL_DISABLED = [
+  "Parallel tool calls are disabled in this OpenCode build.",
+  "Call exactly one tool per assistant turn, then wait for the result before calling another tool.",
+].join("\n")
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -55,6 +59,24 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
+  let activeToolCall: { tool: string; callID: string } | undefined
+
+  const reserveToolCall = (tool: string, callID: string) => {
+    if (!activeToolCall) {
+      activeToolCall = { tool, callID }
+      return
+    }
+    if (activeToolCall.callID === callID) return
+    return {
+      title: "Parallel tool call skipped",
+      output: `${PARALLEL_TOOL_CALL_DISABLED}\n\nAlready running: ${activeToolCall.tool}`,
+      metadata: {
+        parallel_tool_call_disabled: true,
+        activeTool: activeToolCall.tool,
+        activeCallID: activeToolCall.callID,
+      },
+    }
+  }
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -102,6 +124,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       execute(args, options) {
         return run.promise(
           Effect.gen(function* () {
+            const skipped = reserveToolCall(item.id, options.toolCallId)
+            if (skipped) return skipped
             const ctx = context(args, options)
             yield* plugin.trigger(
               "tool.execute.before",
@@ -398,6 +422,12 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     item.execute = (args, opts) =>
       run.promise(
         Effect.gen(function* () {
+          const skipped = reserveToolCall(key, opts.toolCallId)
+          if (skipped)
+            return {
+              ...skipped,
+              content: [{ type: "text" as const, text: skipped.output }],
+            }
           const ctx = context(args, opts)
           yield* plugin.trigger(
             "tool.execute.before",
