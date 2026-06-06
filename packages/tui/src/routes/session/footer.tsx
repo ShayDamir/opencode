@@ -82,6 +82,7 @@ export function Footer() {
                 {mcp()} MCP
               </text>
             </Show>
+            <text fg={theme.warning}>local-model fork</text>
             <text fg={theme.textMuted}>/status</text>
           </Match>
         </Switch>
