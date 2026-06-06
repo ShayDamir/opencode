@@ -55,7 +55,6 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
-import { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -100,6 +99,21 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+function localSessionTitle(text: string) {
+  const title = text
+    .replace(/<[^>\n]+>/g, " ")
+    .replace(/[`*_#>\[\]{}()"']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 6)
+    .join(" ")
+    .replace(/[.,;:!?-]+$/, "")
+  if (!title) return
+  return title.length > 100 ? title.substring(0, 97) + "..." : title
+}
+
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -137,7 +151,7 @@ const layer = Layer.effect(
     const revert = yield* SessionRevert.Service
     const summary = yield* SessionSummary.Service
     const sys = yield* SystemPrompt.Service
-    const llm = yield* LLM.Service
+
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
@@ -194,8 +208,6 @@ const layer = Layer.effect(
     const title = Effect.fn("SessionPrompt.ensureTitle")(function* (input: {
       session: Session.Info
       history: SessionV1.WithParts[]
-      providerID: ProviderV2.ID
-      modelID: ModelV2.ID
     }) {
       if (input.session.parentID) return
       if (!Session.isDefaultTitle(input.session.title)) return
@@ -206,51 +218,23 @@ const layer = Layer.effect(
       if (idx === -1) return
       if (input.history.filter(real).length !== 1) return
 
-      const context = input.history.slice(0, idx + 1)
-      const firstUser = context[idx]
+      const firstUser = input.history[idx]
       if (!firstUser || firstUser.info.role !== "user") return
-      const firstInfo = firstUser.info
 
       const subtasks = firstUser.parts.filter((p): p is SessionV1.SubtaskPart => p.type === "subtask")
       const onlySubtasks = subtasks.length > 0 && firstUser.parts.every((p) => p.type === "subtask")
-
-      const ag = yield* agents.get("title")
-      if (!ag) return
-      const mdl = ag.model
-        ? yield* provider.getModel(ag.model.providerID, ag.model.modelID)
-        : ((yield* provider.getSmallModel(input.providerID)) ??
-          (yield* provider.getModel(input.providerID, input.modelID)))
-      const msgs = onlySubtasks
-        ? [{ role: "user" as const, content: subtasks.map((p) => p.prompt).join("\n") }]
-        : yield* MessageV2.toModelMessagesEffect(context, mdl)
-      const text = yield* llm
-        .stream({
-          agent: ag,
-          user: firstInfo,
-          system: [],
-          small: true,
-          tools: {},
-          model: mdl,
-          sessionID: input.session.id,
-          retries: 2,
-          messages: [{ role: "user", content: "Generate a title for this conversation:\n" }, ...msgs],
-        })
-        .pipe(
-          Stream.filter(LLMEvent.is.textDelta),
-          Stream.map((e) => e.text),
-          Stream.mkString,
-          Effect.orDie,
-        )
-      const cleaned = text
-        .replace(/<think>[\s\S]*?<\/think>\s*/g, "")
-        .split("\n")
-        .map((line) => line.trim())
-        .find((line) => line.length > 0)
-      if (!cleaned) return
-      const t = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
+      const t = localSessionTitle(
+        onlySubtasks
+          ? subtasks.map((p) => p.prompt).join(" ")
+          : firstUser.parts
+              .filter((p): p is SessionV1.TextPart => p.type === "text" && !p.synthetic)
+              .map((p) => p.text)
+              .join(" "),
+      )
+      if (!t) return
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
-        .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
+        .pipe(Effect.catchCause((cause) => Effect.logError("failed to set local title", { error: Cause.squash(cause) })))
     })
 
     const handleSubtask = Effect.fn("SessionPrompt.handleSubtask")(function* (input: {
@@ -1134,8 +1118,6 @@ const layer = Layer.effect(
           if (step === 1)
             yield* title({
               session,
-              modelID: lastUser.model.modelID,
-              providerID: lastUser.model.providerID,
               history: msgs,
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
