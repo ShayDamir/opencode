@@ -1373,6 +1373,34 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
+    "uses the active agent and model for append-style summary requests",
+    () => {
+      const stub = llm()
+      let captured: LLM.StreamInput | undefined
+      stub.push(
+        reply("summary", (input) => {
+          captured = input
+        }),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        yield* SessionCompaction.use.process({ parentID: msg.id, messages: msgs, sessionID: session.id, auto: false })
+
+        expect(captured?.agent.name).toBe("build")
+        expect(captured?.model.providerID).toBe(ref.providerID)
+        expect(captured?.model.id).toBe(ref.modelID)
+        expect(Object.keys(captured?.tools ?? {})).toEqual([])
+        expect(JSON.stringify(captured?.messages.at(-1))).toContain("<compaction-instructions>")
+        expect(JSON.stringify(captured?.messages.at(-1))).toContain("For this response, only produce the requested")
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
     "summarizes only the head while keeping recent tail out of summary input",
     () => {
       const stub = llm()
