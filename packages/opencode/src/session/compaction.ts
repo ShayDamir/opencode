@@ -22,6 +22,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { buildPrompt } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
+import PROMPT_COMPACTION from "@/agent/prompt/compaction.txt"
 
 export const Event = SessionCompactionEvent
 
@@ -160,6 +161,17 @@ function splitTurn(input: {
     }
     return undefined
   })
+}
+
+function appendStylePrompt(input: { prompt: string }) {
+  return [
+    "<compaction-instructions>",
+    PROMPT_COMPACTION,
+    "",
+    "For this response, only produce the requested anchored summary. Do not call tools, continue implementation, answer the user, or perform any other task.",
+    "</compaction-instructions>",
+    input.prompt,
+  ].join("\n")
 }
 
 export interface Interface {
@@ -355,10 +367,9 @@ const layer = Layer.effect(
         }
       }
 
-      const agent = yield* agents.get("compaction")
-      const model = agent.model
-        ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
-        : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
+      const agent = yield* agents.get(userMessage.agent)
+      if (!agent) throw new Error(`Agent not found: "${userMessage.agent}"`)
+      const model = yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
       const cfg = yield* config.get()
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
@@ -378,17 +389,19 @@ const layer = Layer.effect(
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
-      const nextPrompt =
-        compacting.prompt ??
-        [
-          buildPrompt({
-            previousSummary,
-            context: [conversation],
-          }),
-          ...compacting.context,
-        ]
-          .filter(Boolean)
-          .join("\n\n")
+      const nextPrompt = appendStylePrompt({
+        prompt:
+          compacting.prompt ??
+          [
+            buildPrompt({
+              previousSummary,
+              context: [conversation],
+            }),
+            ...compacting.context,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+      })
       const ctx = yield* InstanceState.context
       const msg: SessionV1.Assistant = {
         id: MessageID.ascending(),
