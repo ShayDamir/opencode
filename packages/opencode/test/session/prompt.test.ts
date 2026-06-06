@@ -37,6 +37,7 @@ import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
+import { SessionTools } from "../../src/session/tools"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionV2 } from "@opencode-ai/core/session"
@@ -914,6 +915,81 @@ it.instance("glob tool keeps instance context during prompt runs", () =>
     expect(tool.state.output).toContain(file)
     expect(tool.state.output).not.toContain("No context found for instance")
     expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+  }),
+)
+
+it.instance("limits each assistant turn to one local tool call", () =>
+  Effect.gen(function* () {
+    const { dir } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const agents = yield* AgentSvc.Service
+    const provider = yield* ProviderSvc.Service
+    const session = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    const file = path.join(dir, "probe.txt")
+    yield* writeText(file, "probe")
+    const agent = yield* agents.get("build")
+    if (!agent) throw new Error("build agent not found")
+    const model = yield* provider.getModel(ref.providerID, ref.modelID)
+    const assistant: SessionV1.Assistant = {
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: MessageID.ascending(),
+      sessionID: session.id,
+      mode: "build",
+      agent: "build",
+      cost: 0,
+      path: { cwd: dir, root: dir },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ref.modelID,
+      providerID: ref.providerID,
+      time: { created: Date.now() },
+    }
+
+    const tools = yield* SessionTools.resolve({
+      agent,
+      model,
+      session,
+      processor: {
+        message: assistant,
+        updateToolCall: () => Effect.succeed(undefined),
+        completeToolCall: () => Effect.void,
+      },
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {
+        cancel: (sessionID) => prompt.cancel(sessionID),
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => prompt.prompt(input).pipe(Effect.orDie),
+      },
+    })
+    const glob = tools.glob
+    if (!glob?.execute) throw new Error("glob tool not found")
+    const first = yield* Effect.promise(() =>
+      glob.execute!(
+        {
+          pattern: "**/*.txt",
+        },
+        { toolCallId: "call_1", abortSignal: new AbortController().signal, messages: [] },
+      ),
+    )
+    const second = yield* Effect.promise(() =>
+      glob.execute!(
+        {
+          pattern: "**/*.md",
+        },
+        { toolCallId: "call_2", abortSignal: new AbortController().signal, messages: [] },
+      ),
+    )
+    const firstResult = first as { output: string }
+    const secondResult = second as { output: string; metadata: Record<string, unknown> }
+
+    expect(firstResult.output).toContain(file)
+    expect(secondResult.output).toContain("Parallel tool calls are disabled")
+    expect(secondResult.metadata.parallel_tool_call_disabled).toBe(true)
   }),
 )
 
