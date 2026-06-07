@@ -35,6 +35,10 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SystemPrompt } from "@/session/system"
 import { Instruction } from "@/session/instruction"
+import { ToolRegistry } from "@/tool/registry"
+import { MCP } from "@/mcp"
+import { Truncate } from "@/tool/truncate"
+import { Permission } from "@/permission"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -83,7 +87,7 @@ function createModel(opts: {
       input: { text: true, image: false, audio: false, video: false },
       output: { text: true, image: false, audio: false, video: false },
     },
-    api: { npm: opts.npm ?? "@ai-sdk/anthropic" },
+    api: { id: "test-model", npm: opts.npm ?? "@ai-sdk/anthropic" },
     options: {},
   } as Provider.Model
 }
@@ -234,6 +238,10 @@ const compactionTestNode = LayerNode.group([
   CrossSpawnSpawner.node,
   SystemPrompt.node,
   Instruction.node,
+  Permission.node,
+  ToolRegistry.node,
+  MCP.node,
+  Truncate.node,
 ])
 const env = AppNodeBuilder.build(compactionTestNode, [
   [Provider.node, defaultProvider.layer],
@@ -1398,7 +1406,8 @@ describe("session.compaction.process", () => {
         expect(captured?.agent.name).toBe("build")
         expect(captured?.model.providerID).toBe(ref.providerID)
         expect(captured?.model.id).toBe(ref.modelID)
-        expect(Object.keys(captured?.tools ?? {})).toEqual([])
+        expect(Object.keys(captured?.tools ?? {}).length).toBeGreaterThan(0)
+        expect(captured?.toolChoice).toBe("none")
         expect(captured?.system.join("\n")).toContain("You are powered by the model named")
         expect(captured?.system.join("\n")).toContain("Parallel tool calls are disabled")
         expect(JSON.stringify(captured?.messages.at(-1))).toContain("<compaction-instructions>")

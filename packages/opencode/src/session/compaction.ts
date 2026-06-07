@@ -25,6 +25,12 @@ import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-e
 import PROMPT_COMPACTION from "@/agent/prompt/compaction.txt"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
+import { SessionTools } from "./tools"
+import { Permission } from "@/permission"
+import { ToolRegistry } from "@/tool/registry"
+import { MCP } from "@/mcp"
+import { Truncate } from "@/tool/truncate"
+import type { TaskPromptOps } from "@/tool/task"
 
 export const Event = SessionCompactionEvent
 
@@ -179,6 +185,10 @@ const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const sys = yield* SystemPrompt.Service
     const instruction = yield* Instruction.Service
+    const permission = yield* Permission.Service
+    const registry = yield* ToolRegistry.Service
+    const mcp = yield* MCP.Service
+    const truncate = yield* Truncate.Service
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: SessionV1.Assistant["tokens"]
@@ -338,6 +348,7 @@ const layer = Layer.effect(
       const agent = yield* agents.get(userMessage.agent)
       if (!agent) throw new Error(`Agent not found: "${userMessage.agent}"`)
       const model = yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
+      const currentSession = yield* session.get(input.sessionID).pipe(Effect.orDie)
       const cfg = yield* config.get()
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
@@ -399,11 +410,29 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
+      const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
+      const tools = yield* SessionTools.resolve({
+        agent,
+        session: currentSession,
+        model,
+        processor,
+        bypassAgentCheck: lastUserMsg?.parts.some((p) => p.type === "agent") ?? false,
+        messages: msgs,
+        promptOps: compactionPromptOps,
+      }).pipe(
+        Effect.provideService(Plugin.Service, plugin),
+        Effect.provideService(Permission.Service, permission),
+        Effect.provideService(ToolRegistry.Service, registry),
+        Effect.provideService(MCP.Service, mcp),
+        Effect.provideService(Truncate.Service, truncate),
+        Effect.provideService(RuntimeFlags.Service, flags),
+      )
       const result = yield* processor.process({
         user: userMessage,
         agent,
         sessionID: input.sessionID,
-        tools: {},
+        tools,
+        toolChoice: "none",
         system,
         messages: [
           ...modelMessages,
@@ -558,6 +587,12 @@ const layer = Layer.effect(
   }),
 )
 
+const compactionPromptOps = {
+  cancel: () => Effect.void,
+  resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+  prompt: () => Effect.die("Task tool is disabled during compaction"),
+} satisfies TaskPromptOps
+
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
@@ -572,6 +607,10 @@ export const node = LayerNode.make({
     RuntimeFlags.node,
     SystemPrompt.node,
     Instruction.node,
+    Permission.node,
+    ToolRegistry.node,
+    MCP.node,
+    Truncate.node,
   ],
 })
 
