@@ -23,15 +23,17 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { buildPrompt } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 import PROMPT_COMPACTION from "@/agent/prompt/compaction.txt"
+import { SystemPrompt } from "./system"
+import { Instruction } from "./instruction"
 
 export const Event = SessionCompactionEvent
 
 export const PRUNE_MINIMUM = 20_000
 export const PRUNE_PROTECT = 40_000
-const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 15_000
+const SERIAL_TOOL_CALL_SYSTEM_PROMPT = `Parallel tool calls are disabled. Call at most one tool per assistant turn, then wait for the tool result before calling another tool.`
 type Turn = {
   start: number
   end: number
@@ -47,42 +49,6 @@ type CompletedCompaction = {
   userIndex: number
   assistantIndex: number
   summary: string | undefined
-}
-
-const truncate = (value: string) =>
-  value.length <= TOOL_OUTPUT_MAX_CHARS ? value : `${value.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[truncated]`
-
-const serialize = (message: SessionV1.WithParts) => {
-  if (message.info.role === "user") {
-    const text = message.parts
-      .filter((part): part is SessionV1.TextPart => part.type === "text" && !part.ignored)
-      .map((part) => part.text)
-      .filter(Boolean)
-      .join("\n")
-    const files = message.parts.flatMap((part) =>
-      part.type === "file" ? [`[Attached ${part.mime}: ${part.filename ?? "file"}]`] : [],
-    )
-    return [...(text ? [`[User]: ${text}`] : []), ...files].join("\n")
-  }
-  return message.parts
-    .flatMap((part) => {
-      if (part.type === "text") return part.text ? [`[Assistant]: ${part.text}`] : []
-      if (part.type === "reasoning") return part.text ? [`[Assistant reasoning]: ${part.text}`] : []
-      if (part.type !== "tool") return []
-      const call = `[Assistant tool call]: ${part.tool}(${JSON.stringify(part.state.input)})`
-      if (part.state.status === "completed") {
-        const attachments = (part.state.attachments ?? []).map(
-          (item) => `[Attached ${item.mime}: ${item.filename ?? "file"}]`,
-        )
-        const output = part.state.time.compacted
-          ? "[Old tool result content cleared]"
-          : truncate([part.state.output, ...attachments].join("\n"))
-        return [call, `[Tool result]: ${output}`]
-      }
-      if (part.state.status === "error") return [call, `[Tool error]: ${part.state.error}`]
-      return [call]
-    })
-    .join("\n")
 }
 
 function summaryText(message: SessionV1.WithParts) {
@@ -211,6 +177,8 @@ const layer = Layer.effect(
     const provider = yield* Provider.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const sys = yield* SystemPrompt.Service
+    const instruction = yield* Instruction.Service
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: SessionV1.Assistant["tokens"]
@@ -386,22 +354,18 @@ const layer = Layer.effect(
         { sessionID: input.sessionID },
         { context: [], prompt: undefined },
       )
-      const msgs = structuredClone(selected.head)
-      yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
       const nextPrompt = appendStylePrompt({
-        prompt:
-          compacting.prompt ??
-          [
-            buildPrompt({
-              previousSummary,
-              context: [conversation],
-            }),
-            ...compacting.context,
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
+        prompt: compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context }),
       })
+      const msgs = structuredClone(history.filter((_, index) => !hidden.has(index)))
+      yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+      const [skills, env, instructions, modelMessages] = yield* Effect.all([
+        sys.skills(agent),
+        sys.environment(model),
+        instruction.system().pipe(Effect.orDie),
+        MessageV2.toModelMessagesEffect(msgs, model),
+      ])
+      const system = [...env, ...instructions, ...(skills ? [skills] : []), SERIAL_TOOL_CALL_SYSTEM_PROMPT]
       const ctx = yield* InstanceState.context
       const msg: SessionV1.Assistant = {
         id: MessageID.ascending(),
@@ -440,21 +404,12 @@ const layer = Layer.effect(
         agent,
         sessionID: input.sessionID,
         tools: {},
-        system: [],
+        system,
         messages: [
+          ...modelMessages,
           {
             role: "user",
-            content: [
-              {
-                type: "text",
-                text: [
-                  nextPrompt,
-                  ...(compacting.prompt ? ["The following is the conversation history:", conversation] : []),
-                ]
-                  .filter(Boolean)
-                  .join("\n\n"),
-              },
-            ],
+            content: [{ type: "text", text: nextPrompt }],
           },
         ],
         model,
@@ -615,6 +570,8 @@ export const node = LayerNode.make({
     Provider.node,
     EventV2Bridge.node,
     RuntimeFlags.node,
+    SystemPrompt.node,
+    Instruction.node,
   ],
 })
 
