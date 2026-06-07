@@ -33,6 +33,8 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { SystemPrompt } from "@/session/system"
+import { Instruction } from "@/session/instruction"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -230,6 +232,8 @@ const compactionTestNode = LayerNode.group([
   Database.node,
   EventV2Bridge.node,
   CrossSpawnSpawner.node,
+  SystemPrompt.node,
+  Instruction.node,
 ])
 const env = AppNodeBuilder.build(compactionTestNode, [
   [Provider.node, defaultProvider.layer],
@@ -1015,7 +1019,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "falls back to full summary when retained tail media exceeds preserve token budget",
+    "preserves media in summary request when retained tail media exceeds preserve token budget",
     () => {
       const stub = llm()
       let captured = ""
@@ -1045,7 +1049,9 @@ describe("session.compaction.process", () => {
         expect(part?.type).toBe("compaction")
         expect(part?.tail_start_id).toBeUndefined()
         expect(captured).toContain("recent image turn")
-        expect(captured).toContain("Attached image/png: big.png")
+        expect(captured).toContain('"type":"file"')
+        expect(captured).toContain('"mediaType":"image/png"')
+        expect(captured).toContain('"filename":"big.png"')
       }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }) }))
     },
     { git: true },
@@ -1090,7 +1096,7 @@ describe("session.compaction.process", () => {
         expect(part?.type).toBe("compaction")
         expect(part?.tail_start_id).toBe(keep.id)
         expect(captured).toContain("zzzz")
-        expect(captured).not.toContain("keep tail")
+        expect(captured).toContain("keep tail")
 
         const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
         expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), keep.id])
@@ -1393,15 +1399,17 @@ describe("session.compaction.process", () => {
         expect(captured?.model.providerID).toBe(ref.providerID)
         expect(captured?.model.id).toBe(ref.modelID)
         expect(Object.keys(captured?.tools ?? {})).toEqual([])
+        expect(captured?.system.join("\n")).toContain("You are powered by the model named")
+        expect(captured?.system.join("\n")).toContain("Parallel tool calls are disabled")
         expect(JSON.stringify(captured?.messages.at(-1))).toContain("<compaction-instructions>")
         expect(JSON.stringify(captured?.messages.at(-1))).toContain("For this response, only produce the requested")
-      }).pipe(withCompaction({ llm: stub.layer }))
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
     },
     { git: true },
   )
 
   itCompaction.instance(
-    "summarizes only the head while keeping recent tail out of summary input",
+    "preserves the full visible transcript in summary input",
     () => {
       const stub = llm()
       let messages: LLM.StreamInput["messages"] = []
@@ -1429,16 +1437,9 @@ describe("session.compaction.process", () => {
         })
 
         const captured = JSON.stringify(messages)
-        expect(messages).toHaveLength(1)
-        expect(messages[0]?.role).toBe("user")
-        expect(captured).toContain("Here is the conversation so far:")
-        expect(captured).toContain("<conversation>")
-        expect(captured.indexOf("[User]: older context")).toBeLessThan(
-          captured.indexOf("Create a new anchored summary"),
-        )
-        expect(captured).toContain("[User]: older context")
-        expect(captured).not.toContain("keep this turn")
-        expect(captured).not.toContain("and this one too")
+        expect(captured).toContain("older context")
+        expect(captured).toContain("keep this turn")
+        expect(captured).toContain("and this one too")
         expect(captured).not.toContain("What did we do so far?")
       }).pipe(
         withCompaction({
@@ -1538,13 +1539,13 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "serializes repeated compaction history as one user message",
+    "includes retained tail tool calls in the summary input",
     () => {
       const stub = llm()
-      let captured: LLM.StreamInput["messages"] = []
+      let captured = ""
       stub.push(
         reply("summary two", (input) => {
-          captured = input.messages
+          captured = JSON.stringify(input.messages)
         }),
       )
 
