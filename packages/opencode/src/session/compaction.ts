@@ -353,7 +353,6 @@ const layer = Layer.effect(
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
-      const previousSummary = prior.at(-1)?.summary
       const selected = yield* select({
         messages: history.filter((_, index) => !hidden.has(index)),
         cfg,
@@ -366,9 +365,9 @@ const layer = Layer.effect(
         { context: [], prompt: undefined },
       )
       const nextPrompt = appendStylePrompt({
-        prompt: compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context }),
+        prompt: compacting.prompt ?? buildPrompt({ context: compacting.context }),
       })
-      const msgs = structuredClone(history.filter((_, index) => !hidden.has(index)))
+      const msgs = structuredClone(history)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const [skills, env, instructions, modelMessages] = yield* Effect.all([
         sys.skills(agent),

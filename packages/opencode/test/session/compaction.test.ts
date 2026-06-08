@@ -1461,7 +1461,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "anchors repeated compactions with the previous summary",
+    "treats previous compaction summary as active transcript content",
     () => {
       const stub = llm()
       let captured = ""
@@ -1492,11 +1492,11 @@ describe("session.compaction.process", () => {
         expect(parent).toBeTruthy()
         yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
 
-        expect(captured).toContain("<prior-summary>")
+expect(captured).not.toContain("<previous-summary>")
+        expect(captured).not.toContain("<prior-summary>")
         expect(captured).toContain("summary one")
         expect(captured.match(/summary one/g)?.length).toBe(1)
-        expect(captured.indexOf("latest turn")).toBeLessThan(captured.indexOf("<prior-summary>"))
-        expect(captured).toContain("summary of the conversation before the <conversation> above")
+        expect(captured).toContain("latest turn")
         expect(captured).toContain("## Important Details")
         expect(captured).toContain("## Work State")
       }).pipe(withCompaction({ llm: stub.llmLayer }))
