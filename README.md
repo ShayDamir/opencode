@@ -27,6 +27,41 @@ Changes in this fork:
 
 Existing OpenCode config, providers, models, and plugins continue to load from the normal global and project config locations.
 
+### Build and Run This Fork
+
+The install and download links later in this README install official upstream OpenCode builds from `anomalyco/opencode`. They do not include the local-model fork changes above. To use this fork, clone this repository and build the CLI locally.
+
+```bash
+git clone https://github.com/PlunderStruck/opencode.git
+cd opencode
+git checkout dev
+
+bun install
+bun run --cwd packages/opencode build --single
+```
+
+The build writes the current-platform binary under `packages/opencode/dist/*/bin/opencode`. Run it directly:
+
+```bash
+OPENCODE_BIN="$(find "$PWD/packages/opencode/dist" -path "*/bin/opencode" -type f | head -n 1)"
+"$OPENCODE_BIN" --version
+"$OPENCODE_BIN"
+```
+
+On Windows, use the generated `packages\opencode\dist\*\bin\opencode.exe` binary instead.
+
+To make your shell use this fork when you type `opencode`, put the built binary earlier in your `PATH` than any upstream install:
+
+```bash
+OPENCODE_BIN="$(find "$PWD/packages/opencode/dist" -path "*/bin/opencode" -type f | head -n 1)"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$OPENCODE_BIN" "$HOME/.local/bin/opencode"
+export PATH="$HOME/.local/bin:$PATH"
+opencode --version
+```
+
+If `opencode --version` still resolves to the regular upstream build, check `which opencode` and remove or reorder the older install path.
+
 <p align="center">
   <a href="README.md">English</a> |
   <a href="README.zh.md">简体中文</a> |
@@ -58,6 +93,8 @@ Existing OpenCode config, providers, models, and plugins continue to load from t
 
 ### Installation
 
+The commands below install official upstream OpenCode. Use the build instructions above if you want this local-model fork.
+
 ```bash
 # YOLO
 curl -fsSL https://opencode.ai/install | bash
@@ -78,6 +115,8 @@ nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev
 > Remove versions older than 0.1.x before installing.
 
 ### Desktop App (BETA)
+
+The desktop downloads are official upstream OpenCode builds, not this fork.
 
 OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
 
