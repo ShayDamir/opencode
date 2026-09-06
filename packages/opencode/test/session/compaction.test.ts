@@ -1496,7 +1496,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "keeps plugin context outside the serialized conversation",
+    "includes plugin context in the summary prompt",
     () => {
       const stub = llm()
       let captured = ""
@@ -1524,10 +1524,10 @@ describe("session.compaction.process", () => {
           auto: false,
         })
 
+        expect(captured).toContain("older context")
+        expect(captured).toContain("keep this turn")
+        expect(captured).toContain("and this one too")
         expect(captured).toContain("Prioritize unresolved migration details")
-        expect(captured.indexOf("</conversation>")).toBeLessThan(
-          captured.indexOf("Prioritize unresolved migration details"),
-        )
       }).pipe(
         withCompaction({
           llm: stub.llmLayer,
@@ -1539,12 +1539,12 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "includes retained tail tool calls in the summary input",
+    "includes retained tool calls in the summary input",
     () => {
       const stub = llm()
       let captured = ""
       stub.push(
-        reply("summary two", (input) => {
+        reply("summary", (input) => {
           captured = JSON.stringify(input.messages)
         }),
       )
@@ -1571,36 +1571,18 @@ describe("session.compaction.process", () => {
             time: { start: Date.now(), end: Date.now() },
           },
         })
-
-        const previous = yield* ssn.updateMessage({
-          id: MessageID.ascending(),
-          role: "user",
-          model: ref,
-          sessionID: session.id,
-          agent: "build",
-          time: { created: Date.now() },
-        })
-        yield* ssn.updatePart({
-          id: PartID.ascending(),
-          messageID: previous.id,
-          sessionID: session.id,
-          type: "compaction",
-          auto: false,
-          tail_start_id: kept.id,
-        })
-        yield* createSummaryAssistantMessage(session.id, previous.id, test.directory, "summary one")
+        yield* createUserMessage(session.id, "keep this turn")
         yield* createCompactionMarker(session.id)
 
-        const msgs = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+        const msgs = yield* ssn.messages({ sessionID: session.id })
         const parent = msgs.at(-1)?.info.id
         expect(parent).toBeTruthy()
         yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
 
-        expect(captured).toHaveLength(1)
-        expect(captured[0]?.role).toBe("user")
-        expect(JSON.stringify(captured)).toContain('[Assistant tool call]: read({\\"filePath\\":\\"src/index.ts\\"})')
-        expect(JSON.stringify(captured)).toContain("[Tool result]: file contents")
-        expect(JSON.stringify(captured)).not.toContain('\\"role\\":\\"assistant\\"')
+        expect(captured).toContain("original request")
+        expect(captured).toContain("keep this turn")
+        expect(captured).toContain('"type":"tool-call"')
+        expect(captured).toContain("file contents")
       }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg({ tail_turns: 0 }) }))
     },
     { git: true },
